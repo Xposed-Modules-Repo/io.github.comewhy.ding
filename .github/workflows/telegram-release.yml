@@ -5,7 +5,6 @@ on:
   release:
     types: [published]
 
-  # 支持手动选择历史 Release 重新推送
   workflow_dispatch:
     inputs:
       release_tag:
@@ -96,7 +95,7 @@ jobs:
             exit 1
           fi
 
-      # 3. 发送版本说明（不包含 GitHub 下载链接）
+      # 3. 发送版本说明
       - name: Send release information
         env:
           BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -131,7 +130,7 @@ jobs:
 
           echo "$RESPONSE" | jq -e '.ok == true' > /dev/null
 
-      # 4. 逐个发送 APK 附件
+      # 4. 发送所有 APK 附件
       - name: Send all APK files
         env:
           BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -153,23 +152,16 @@ jobs:
           for APK in "${APK_FILES[@]}"; do
 
             APK_PATH="$(realpath -- "$APK")"
+            APK_NAME="$(basename "$APK_PATH")"
 
             echo "Preparing APK: $APK_PATH"
 
-            if [ ! -f "$APK_PATH" ]; then
-              echo "ERROR: APK does not exist."
-              exit 1
-            fi
-
-            chmod u+r "$APK_PATH"
-
-            if [ ! -r "$APK_PATH" ]; then
-              echo "ERROR: APK is not readable."
+            if [ ! -f "$APK_PATH" ] || [ ! -r "$APK_PATH" ]; then
+              echo "ERROR: APK does not exist or is unreadable."
               exit 1
             fi
 
             SIZE=$(stat -c%s "$APK_PATH")
-
             echo "APK size: $SIZE bytes"
 
             # Telegram 云端 Bot API 单文件限制 50MB
@@ -178,21 +170,24 @@ jobs:
               exit 1
             fi
 
-            echo "Uploading APK: $(basename "$APK_PATH")"
+            echo "Uploading APK: $APK_NAME"
 
-            RESPONSE=$(curl --fail-with-body \
-              --silent --show-error \
-              -X POST \
-              "https://api.telegram.org/bot${BOT_TOKEN}/sendDocument" \
-              -F "chat_id=${CHAT_ID}" \
-              -F "document=@${APK_PATH};type=application/vnd.android.package-archive" \
-              -F "caption=Ding ${RELEASE_TAG} - $(basename "$APK_PATH")")
+            RESPONSE=$(
+              curl --fail-with-body \
+                --silent --show-error \
+                -X POST \
+                "https://api.telegram.org/bot${BOT_TOKEN}/sendDocument" \
+                -F "chat_id=${CHAT_ID}" \
+                -F "document=@-;filename=${APK_NAME};type=application/vnd.android.package-archive" \
+                -F "caption=Ding ${RELEASE_TAG} - ${APK_NAME}" \
+                < "$APK_PATH"
+            )
 
             echo "$RESPONSE" | jq .
 
             echo "$RESPONSE" | jq -e '.ok == true' > /dev/null
 
-            echo "APK uploaded successfully!"
+            echo "APK uploaded successfully: $APK_NAME"
 
           done
 
