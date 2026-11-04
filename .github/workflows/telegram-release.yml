@@ -1,0 +1,98 @@
+
+name: Telegram Release Notification
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  telegram:
+    name: Send Release and APK to Telegram
+    if: ${{ github.event.release.prerelease == false }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download APK assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -e
+
+          COUNT=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" \
+            --jq '[.assets[] | select(.name | endswith(".apk"))] | length')
+
+          if [ "$COUNT" -eq 0 ]; then
+            echo "Error: No APK attachments found in this release."
+            exit 1
+          fi
+
+          mkdir -p assets
+
+          gh release download "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern '*.apk' \
+            --dir assets
+
+      - name: Send release information
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          RELEASE_NAME: ${{ github.event.release.name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_BODY: ${{ github.event.release.body }}
+          RELEASE_URL: ${{ github.event.release.html_url }}
+        run: |
+          set -e
+
+          TITLE="${RELEASE_NAME:-$RELEASE_TAG}"
+          BODY="${RELEASE_BODY:-暂无更新说明}"
+          BODY="${BODY:0:3000}"
+
+          MESSAGE=$(printf '🎉 Ding 发布新版本！\n\n📦 项目：Ding\n🏷 版本：%s\n🔖 Tag：%s\n\n📝 更新内容：\n%s\n\n⬇️ GitHub 下载页面：\n%s\n\n📎 APK 安装包即将发送，请查收。' \
+            "$TITLE" "$RELEASE_TAG" "$BODY" "$RELEASE_URL")
+
+          jq -n \
+            --arg chat_id "$CHAT_ID" \
+            --arg text "$MESSAGE" \
+            '{
+              chat_id: $chat_id,
+              text: $text,
+              disable_web_page_preview: false
+            }' > message.json
+
+          curl --fail-with-body --silent --show-error \
+            -X POST \
+            "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+            -H "Content-Type: application/json" \
+            --data-binary @message.json
+
+      - name: Send all APK files
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -e
+
+          mapfile -d '' APK_FILES < <(
+            find assets -maxdepth 1 -type f -iname '*.apk' -print0
+          )
+
+          for APK in "${APK_FILES[@]}"; do
+            echo "Sending: $APK"
+
+            curl --fail-with-body --silent --show-error \
+              -X POST \
+              "https://api.telegram.org/bot${BOT_TOKEN}/sendDocument" \
+              -F "chat_id=${CHAT_ID}" \
+              -F "document=@${APK}" \
+              -F "caption=Ding ${RELEASE_TAG} - $(basename "$APK")"
+
+          done
+
+          echo "All APK files sent successfully."
