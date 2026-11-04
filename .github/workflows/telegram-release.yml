@@ -5,7 +5,6 @@ on:
   release:
     types: [published]
 
-  # 支持手动重新推送历史版本
   workflow_dispatch:
     inputs:
       release_tag:
@@ -61,9 +60,6 @@ jobs:
 
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
-          echo "name=$(jq -r '.name // .tag_name' release.json)" \
-            >> "$GITHUB_OUTPUT"
-
           jq -r '.body // "暂无更新说明"' \
             release.json > release_body.txt
 
@@ -96,48 +92,14 @@ jobs:
             exit 1
           fi
 
-      # 3. 发送版本说明
-      - name: Send release information
-        env:
-          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          RELEASE_NAME: ${{ steps.release.outputs.name }}
-          RELEASE_TAG: ${{ steps.release.outputs.tag }}
-        run: |
-          set -euo pipefail
-
-          BODY=$(cat release_body.txt)
-          BODY="${BODY:0:3000}"
-
-          MESSAGE=$(printf '🎉 Ding 发布新版本！\n\n📦 项目：Ding\n🏷 版本：%s\n🔖 Tag：%s\n\n📝 更新内容：\n%s\n\n📎 APK 安装包请查收。' \
-            "$RELEASE_NAME" "$RELEASE_TAG" "$BODY")
-
-          jq -n \
-            --arg chat_id "$CHAT_ID" \
-            --arg text "$MESSAGE" \
-            '{
-              chat_id: $chat_id,
-              text: $text
-            }' > message.json
-
-          RESPONSE=$(curl --fail-with-body \
-            --silent --show-error \
-            -X POST \
-            "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
-            -H "Content-Type: application/json" \
-            --data-binary @message.json)
-
-          echo "$RESPONSE" | jq .
-
-          echo "$RESPONSE" | jq -e '.ok == true' > /dev/null
-
-      # 4. 使用 Python 原生 HTTP 上传所有 APK
-      - name: Send all APK files with Python
+      # 3. 使用 Python 将更新日志与 APK 合并发送
+      - name: Send APK with release notes
         env:
           BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
           APK_DIRECTORY: ${{ github.workspace }}/assets
+          RELEASE_BODY_FILE: ${{ github.workspace }}/release_body.txt
         run: |
           set -euo pipefail
 
@@ -146,18 +108,39 @@ jobs:
           import sys
           import json
           import uuid
-          import mimetypes
           import urllib.request
           import urllib.error
           from pathlib import Path
-          from urllib.parse import quote
 
           bot_token = os.environ["BOT_TOKEN"]
           chat_id = os.environ["CHAT_ID"]
           release_tag = os.environ["RELEASE_TAG"]
           apk_directory = Path(os.environ["APK_DIRECTORY"])
+          release_body_file = Path(os.environ["RELEASE_BODY_FILE"])
 
           MAX_SIZE = 50 * 1024 * 1024
+          MAX_CAPTION_LENGTH = 1000
+
+          # 读取 Release 更新日志
+          release_body = release_body_file.read_text(
+              encoding="utf-8"
+          ).strip()
+
+          if not release_body:
+              release_body = "暂无更新说明"
+
+          caption = (
+              "🎉 Ding 发布新版本！\n\n"
+              "📝 更新内容：\n"
+              + release_body
+          )
+
+          # Telegram Caption 最多 1024 个字符
+          if len(caption) > MAX_CAPTION_LENGTH:
+              caption = caption[:MAX_CAPTION_LENGTH - 3] + "..."
+
+          print("Telegram message caption:")
+          print(caption)
 
           apk_files = sorted(
               p for p in apk_directory.iterdir()
@@ -170,12 +153,10 @@ jobs:
 
           print(f"Found {len(apk_files)} APK file(s).")
 
-          for apk_path in apk_files:
+          for index, apk_path in enumerate(apk_files):
+
               print("=" * 50)
               print(f"Preparing APK: {apk_path.name}")
-
-              if not apk_path.is_file():
-                  raise RuntimeError("APK file does not exist.")
 
               file_size = apk_path.stat().st_size
 
@@ -189,7 +170,7 @@ jobs:
                       f"APK exceeds 50MB: {apk_path.name}"
                   )
 
-              # 使用 Python 二进制方式读取文件
+              # Python 二进制方式读取 APK
               with apk_path.open("rb") as f:
                   file_data = f.read()
 
@@ -204,22 +185,26 @@ jobs:
 
               print("APK read successfully.")
 
-              boundary = "----ChatGPTTelegram" + uuid.uuid4().hex
-
-              fields = {
-                  "chat_id": chat_id,
-                  "caption": f"Ding {release_tag} - {apk_path.name}"
-              }
+              boundary = "----TelegramBoundary" + uuid.uuid4().hex
 
               body_parts = []
 
-              for key, value in fields.items():
+              def add_field(name, value):
                   body_parts.append(
-                      f"--{boundary}\r\n"
-                      f'Content-Disposition: form-data; name="{key}"\r\n'
-                      f"\r\n"
-                      f"{value}\r\n"
-                  .encode("utf-8"))
+                      (
+                          f"--{boundary}\r\n"
+                          f'Content-Disposition: form-data; name="{name}"\r\n'
+                          f"\r\n"
+                          f"{value}\r\n"
+                      ).encode("utf-8")
+                  )
+
+              add_field("chat_id", chat_id)
+
+              # 只在第一个 APK 上附加更新日志
+              # 避免多个 APK 重复发送相同的更新说明
+              if index == 0:
+                  add_field("caption", caption)
 
               safe_filename = apk_path.name.replace('"', '_')
 
@@ -248,14 +233,15 @@ jobs:
                   url,
                   data=request_body,
                   headers={
-                      "Content-Type": f"multipart/form-data; boundary={boundary}",
+                      "Content-Type": (
+                          f"multipart/form-data; boundary={boundary}"
+                      ),
                       "Content-Length": str(len(request_body)),
                   },
                   method="POST"
               )
 
               print(f"Uploading: {apk_path.name}")
-              print(f"Request size: {len(request_body)} bytes")
 
               try:
                   with urllib.request.urlopen(
