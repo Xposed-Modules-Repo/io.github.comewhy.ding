@@ -5,34 +5,75 @@ on:
   release:
     types: [published]
 
+  # 支持手动选择历史 Release 重新推送
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "要推送的 Release Tag，例如 1-1.0"
+        required: true
+        type: string
+
 permissions:
   contents: read
 
 jobs:
   telegram:
     name: Send Release and APK to Telegram
-    if: ${{ github.event.release.prerelease == false }}
+
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.release.prerelease == false
+
     runs-on: ubuntu-latest
 
     steps:
-      # 1. 下载 Release 中的所有 APK
-      - name: Download APK assets
+      # 1. 获取 Release 信息
+      - name: Get release information
+        id: release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
 
-          echo "Checking Release APK assets..."
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            TAG="$INPUT_TAG"
+          else
+            TAG="${{ github.event.release.tag_name }}"
+          fi
 
-          COUNT=$(gh api \
-            "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" \
-            --jq '[.assets[] | select(.name | endswith(".apk") or endswith(".APK"))] | length')
+          echo "Release tag: $TAG"
 
-          if [ "$COUNT" -eq 0 ]; then
-            echo "ERROR: No APK attachments found."
+          gh api \
+            "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" \
+            > release.json
+
+          if [ "$(jq -r '.draft' release.json)" = "true" ]; then
+            echo "ERROR: Release is still a draft."
             exit 1
           fi
+
+          if [ "$(jq -r '.prerelease' release.json)" = "true" ]; then
+            echo "ERROR: Pre-release will not be sent."
+            exit 1
+          fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+          echo "name=$(jq -r '.name // .tag_name' release.json)" \
+            >> "$GITHUB_OUTPUT"
+
+          jq -r '.body // "暂无更新说明"' \
+            release.json > release_body.txt
+
+      # 2. 下载所有 APK 附件
+      - name: Download APK assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
 
           mkdir -p "$GITHUB_WORKSPACE/assets"
 
@@ -43,25 +84,33 @@ jobs:
             --dir "$GITHUB_WORKSPACE/assets"
 
           echo "Downloaded APK files:"
-          find "$GITHUB_WORKSPACE/assets" -type f -iname '*.apk' -exec ls -lh {} \;
 
-      # 2. 发送版本信息和更新日志
+          find "$GITHUB_WORKSPACE/assets" \
+            -maxdepth 1 -type f -iname '*.apk' -exec ls -lh {} \;
+
+          COUNT=$(find "$GITHUB_WORKSPACE/assets" \
+            -maxdepth 1 -type f -iname '*.apk' | wc -l)
+
+          if [ "$COUNT" -eq 0 ]; then
+            echo "ERROR: No APK files found."
+            exit 1
+          fi
+
+      # 3. 发送版本说明（不包含 GitHub 下载链接）
       - name: Send release information
         env:
           BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          RELEASE_NAME: ${{ github.event.release.name }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-          RELEASE_BODY: ${{ github.event.release.body }}
+          RELEASE_NAME: ${{ steps.release.outputs.name }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
         run: |
           set -euo pipefail
 
-          TITLE="${RELEASE_NAME:-$RELEASE_TAG}"
-          BODY="${RELEASE_BODY:-暂无更新说明}"
+          BODY=$(cat release_body.txt)
           BODY="${BODY:0:3000}"
 
           MESSAGE=$(printf '🎉 Ding 发布新版本！\n\n📦 项目：Ding\n🏷 版本：%s\n🔖 Tag：%s\n\n📝 更新内容：\n%s\n\n📎 APK 安装包请查收。' \
-            "$TITLE" "$RELEASE_TAG" "$BODY")
+            "$RELEASE_NAME" "$RELEASE_TAG" "$BODY")
 
           jq -n \
             --arg chat_id "$CHAT_ID" \
@@ -71,20 +120,23 @@ jobs:
               text: $text
             }' > message.json
 
-          curl --fail-with-body --silent --show-error \
+          RESPONSE=$(curl --fail-with-body \
+            --silent --show-error \
             -X POST \
             "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
             -H "Content-Type: application/json" \
-            --data-binary @message.json
+            --data-binary @message.json)
 
-          echo "Release information sent successfully."
+          echo "$RESPONSE" | jq .
 
-      # 3. 逐个发送 APK 附件
+          echo "$RESPONSE" | jq -e '.ok == true' > /dev/null
+
+      # 4. 逐个发送 APK 附件
       - name: Send all APK files
         env:
           BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
         run: |
           set -euo pipefail
 
@@ -94,32 +146,39 @@ jobs:
           )
 
           if [ "${#APK_FILES[@]}" -eq 0 ]; then
-            echo "ERROR: No APK files found"
+            echo "ERROR: No APK files found."
             exit 1
           fi
 
           for APK in "${APK_FILES[@]}"; do
+
             APK_PATH="$(realpath -- "$APK")"
 
             echo "Preparing APK: $APK_PATH"
 
+            if [ ! -f "$APK_PATH" ]; then
+              echo "ERROR: APK does not exist."
+              exit 1
+            fi
+
             chmod u+r "$APK_PATH"
 
             if [ ! -r "$APK_PATH" ]; then
-              echo "ERROR: APK file is not readable"
+              echo "ERROR: APK is not readable."
               exit 1
             fi
-
-            ls -lh "$APK_PATH"
 
             SIZE=$(stat -c%s "$APK_PATH")
 
+            echo "APK size: $SIZE bytes"
+
+            # Telegram 云端 Bot API 单文件限制 50MB
             if [ "$SIZE" -gt 52428800 ]; then
-              echo "ERROR: APK exceeds Telegram Bot API 50MB limit"
+              echo "ERROR: APK exceeds 50MB."
               exit 1
             fi
 
-            echo "Uploading APK to Telegram..."
+            echo "Uploading APK: $(basename "$APK_PATH")"
 
             RESPONSE=$(curl --fail-with-body \
               --silent --show-error \
@@ -134,6 +193,7 @@ jobs:
             echo "$RESPONSE" | jq -e '.ok == true' > /dev/null
 
             echo "APK uploaded successfully!"
+
           done
 
           echo "All APK files sent successfully."
