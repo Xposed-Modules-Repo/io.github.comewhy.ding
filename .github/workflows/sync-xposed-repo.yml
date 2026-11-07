@@ -7,9 +7,18 @@ on:
       - main
     tags:
       - '*'
+
   release:
-    types: [published, edited]
+    types:
+      - published
+      - edited
+
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: '需要同步的历史 Release Tag，例如 1-1.0'
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -19,15 +28,17 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout source
+      - name: Checkout main branch
         uses: actions/checkout@v4
         with:
+          ref: main
           fetch-depth: 0
           persist-credentials: false
 
       - name: Sync files and tags
         env:
           MIRROR_TOKEN: ${{ secrets.MIRROR_TOKEN }}
+          TARGET_REPO: Xposed-Modules-Repo/io.github.comewhy.ding
         run: |
           set -euo pipefail
 
@@ -37,14 +48,18 @@ jobs:
           fi
 
           git remote add mirror \
-            "https://x-access-token:${MIRROR_TOKEN}@github.com/Xposed-Modules-Repo/io.github.comewhy.ding.git"
+            "https://x-access-token:${MIRROR_TOKEN}@github.com/${TARGET_REPO}.git"
+
+          git fetch origin --tags --force
 
           git push mirror HEAD:refs/heads/main --force
-          git fetch mirror --tags --force
+
           git push mirror 'refs/tags/*:refs/tags/*' --force
 
   sync-release:
-    if: github.event_name == 'release'
+    if: >-
+      github.event_name == 'release' ||
+      github.event_name == 'workflow_dispatch'
     needs: sync-files
     runs-on: ubuntu-latest
 
@@ -52,29 +67,40 @@ jobs:
       - name: Download source release assets
         env:
           GH_TOKEN: ${{ secrets.MIRROR_TOKEN }}
+          SOURCE_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.release_tag }}
         run: |
           set -euo pipefail
 
+          gh auth status
+
           mkdir -p release-assets
 
-          gh release download "${{ github.event.release.tag_name }}" \
-            --repo "${{ github.repository }}" \
+          gh release view "$RELEASE_TAG" \
+            --repo "$SOURCE_REPO"
+
+          gh release download "$RELEASE_TAG" \
+            --repo "$SOURCE_REPO" \
             --dir release-assets
 
       - name: Copy release to mirror
         env:
           GH_TOKEN: ${{ secrets.MIRROR_TOKEN }}
           SOURCE_REPO: ${{ github.repository }}
-          TAG: ${{ github.event.release.tag_name }}
+          TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.release_tag }}
           TARGET_REPO: Xposed-Modules-Repo/io.github.comewhy.ding
         run: |
           set -euo pipefail
 
+          gh auth status
+
           TITLE=$(gh release view "$TAG" \
-            --repo "$SOURCE_REPO" --json name --jq '.name')
+            --repo "$SOURCE_REPO" \
+            --json name --jq '.name')
 
           BODY=$(gh release view "$TAG" \
-            --repo "$SOURCE_REPO" --json body --jq '.body')
+            --repo "$SOURCE_REPO" \
+            --json body --jq '.body')
 
           shopt -s nullglob
           ASSETS=(release-assets/*)
@@ -84,18 +110,30 @@ jobs:
             exit 1
           fi
 
-          if gh release view "$TAG" --repo "$TARGET_REPO" >/dev/null 2>&1; then
+          if gh release view "$TAG" \
+            --repo "$TARGET_REPO" >/dev/null 2>&1; then
+
+            echo "Updating existing release: $TAG"
+
             gh release edit "$TAG" \
               --repo "$TARGET_REPO" \
               --title "$TITLE" \
               --notes "$BODY"
 
             gh release upload "$TAG" "${ASSETS[@]}" \
-              --repo "$TARGET_REPO" --clobber
+              --repo "$TARGET_REPO" \
+              --clobber
+
           else
+
+            echo "Creating new release: $TAG"
+
             gh release create "$TAG" "${ASSETS[@]}" \
               --repo "$TARGET_REPO" \
               --title "$TITLE" \
               --notes "$BODY" \
               --target main
+
           fi
+
+          echo "Release synchronization completed: $TAG"
