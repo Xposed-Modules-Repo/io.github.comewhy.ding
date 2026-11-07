@@ -1,0 +1,71 @@
+name: Sync README and SUMMARY to Xposed Repo
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - README.md
+      - SUMMARY
+      - .github/workflows/sync-xposed-repo.yml
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source repository
+        uses: actions/checkout@v4
+
+      - name: Sync files to official repository
+        env:
+          GH_TOKEN: ${{ secrets.XPOSED_REPO_TOKEN }}
+          TARGET_REPO: Xposed-Modules-Repo/io.github.comewhy.ding
+        run: |
+          set -euo pipefail
+
+          echo "Target repository: $TARGET_REPO"
+
+          # 检查需要同步的文件
+          for file in README.md SUMMARY; do
+            if [ ! -f "$file" ]; then
+              echo "Missing required file: $file"
+              exit 1
+            fi
+          done
+
+          # 配置 GitHub CLI 认证
+          gh auth setup-git
+
+          # 克隆官方仓库
+          gh repo clone "$TARGET_REPO" official-repo
+
+          # 复制文档
+          cp README.md official-repo/README.md
+          cp SUMMARY official-repo/SUMMARY
+
+          cd official-repo
+
+          # 配置提交身份
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # 添加文件
+          git add README.md SUMMARY
+
+          # 检查是否有实际变化
+          if git diff --cached --quiet; then
+            echo "No changes detected. Skip commit."
+            exit 0
+          fi
+
+          # 提交并推送
+          git commit -m "Sync README and SUMMARY from personal repository"
+          git push
+
+          echo "Sync completed successfully."
