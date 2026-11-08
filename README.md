@@ -2,8 +2,11 @@
 <p align="center"><strong>钉住消息和隐私</strong></p>
 <p align="center">面向钉钉的第三方 Xposed 模块 · libxposed API 102 · Material Design 3</p>
 
+Ding 提供消息防撤回、禁止已读上报和隐藏输入状态等功能。
 
-[反馈问题](https://github.com/comewhy/com.comewhy.Ding/issues) · [Telegram 频道](https://t.me/come_why)
+应用包名：`io.github.comewhy.ding`。
+
+[反馈问题](https://github.com/comewhy/io.github.comewhy.ding/issues) · [Telegram 群组](https://t.me/GText_Ding)
 
 ## 功能
 
@@ -16,7 +19,10 @@
 | 关键词高级设置 | 支持会话范围、免打扰时段及 RE2/J 安全正则；旧正则需确认迁移后生效。 |
 | 自动回复 | 支持默认内容或按 AA-BB 规则匹配回复；同会话间隔可拖动设置为0～30分钟。账号和登录代次变化会取消未提交任务。 |
 | 配置备份 | 通过系统文件选择器导出／导入配置；支持旧版备份迁移，保存后读取框架值确认结果。 |
-| 发送前确认 | 超过阈值（默认 20 字，可调）或带附件的消息发送前弹窗确认。 |
+| 发送前确认 | 超过阈值（默认 20 字，可调）或带附件的消息发送前弹窗确认；点「取消」时输入框中的文字与插入的图片原样保留，可直接继续编辑或再次发送。 |
+| 右滑回复 | 补启钉钉 9.0.5 被服务端关闭的原生气泡引用回复手势链，从左往右滑消息直接进入原生引用回复；默认关闭。 |
+| 禁止 DING 自动确认 | 拦截聊天卡片、详情页与顶部悬浮卡片的自动确认，并在悬浮卡片上注入手动「确认」按钮，确认时机完全由用户掌控；默认关闭。 |
+| 拦截播放与点击上报 | 语音、图片、视频和普通网页链接不再向服务端上报“已播放/已点击”，本机界面状态保持正常；默认关闭。 |
 | 原图发送偏好 | 普通聊天选择照片时，可默认勾选原图，或按账号记住上次原图选择；默认关闭，每次仍可手动更改。 |
 | 跳过开屏广告 | 直接关闭启动时的广告开屏页（含视频开屏）。 |
 | 平板模式 | 模拟平板登录，尝试让两台手机同时登录同一钉钉账号；默认关闭，开启后需重启并重新登录。 |
@@ -39,7 +45,7 @@
 
 ## 安装与使用
 
-1. 从 [Releases](https://github.com/comewhy/com.comewhy.Ding/releases) 获取已发布的 APK 并安装。
+1. 从 [Releases](https://github.com/comewhy/io.github.comewhy.ding/releases) 获取已发布的 APK 并安装。
 2. 在 LSPosed 中启用 **Ding**，勾选 **钉钉** 作用域。
 3. 打开 Ding，确认框架连接状态，按需要设置功能开关。
 4. **强行停止钉钉，再重新打开**，使模块和新设置生效。
@@ -95,12 +101,14 @@
 
 ## 隐藏桌面图标
 
-设置页提供「隐藏桌面图标」开关，开启后图标立即从桌面消失，模块功能不受影响。之后回到设置页的方式：
+设置页提供「隐藏桌面图标」开关，开启后可隐藏桌面图标，模块功能不受影响。之后回到设置页的方式：
 
 - 打开 **LSPosed → 模块 → 长按 Ding → 打开**；
 - 或连接电脑执行 `adb shell am start -n io.github.comewhy.ding/.MainActivity`。
 
 在设置页关闭该开关即可恢复图标。覆盖安装更新会保留隐藏状态；全新安装默认显示图标。
+
+若隐藏后桌面仍显示 Ding 图标，请关闭 LSPosed → 设置 →“强制显示桌面图标”，然后重新切换隐藏开关。
 
 ## 撤回标签
 
@@ -128,8 +136,23 @@
 
 数据升级至 v3 时保留历史记录及旧字段。回滚构建应保留 v3 兼容的存储层，避免旧存储实现拒绝读取升级后的数据库。
 
+## 开发检查
+
+推荐入口：`tools/run_project_checks.ps1 -JavaHome <JDK19目录>`；完整检查后用 `tools/build_release.ps1 -JavaHome <JDK19目录> -SkipChecks` 构建并独立验签，不传 `-SkipChecks` 则先检查再打包。也可在本机忽略文件 `local.properties` 配置 `ding.javaHome`，或设置 `DING_JAVA_HOME`。检查脚本入口校验 JDK 19，并仅在当前进程设置 Java 环境；默认 JDK 27 无法完成当前 Android JDK image 转换。绕过检查脚本直接运行 Gradle 构建时，请使用 Android Studio 自带的 JBR（JDK 21）作为 `JAVA_HOME`。
+
+- `tools/run_behavior_tests.ps1 -AndroidJar <android.jar>` 编译当前生产源码后运行 Hook、安装和配置仓库检查，并生成源码校验清单。
+- 默认行为检查同时运行原图偏好测试；也可单独执行 `tools/run_original_photo_tests.ps1 -AndroidJar <android.jar>`，覆盖新旧入口、手动反选、取消与异常结果、按账号记忆和存储失败。
+- 默认行为检查也包含安全正则、规则迁移、配置传输和独立自动回复回归；RE2/J 测试依赖由 `tools/resolve_re2j.ps1` 下载并校验固定 SHA-256。
+- `python tools/run_store_tests.py` 用测试专用 JDBC 适配器验证生产存储与媒体判断；依赖只放本机测试缓存，不进入 APK。
+- `tests/android/run_control_client_tests.ps1 -AndroidJar <android.jar>` 验证固定 SDK102 权威读写桥和控制响应。
+- `python -m unittest discover -s tests/python` 验证 APK 工具；`tools/verify_target_apk.py` 从当前版本 profile 编译符号清单，检查真实目标 APK。
+- `tests/signing-restore-guard-tests.ps1` 和 `tests/signing-script-tests.ps1 -SkipKeytool` 验证签名恢复守卫，不创建正式密钥。
+- 隔离 Instrumentation 使用 `io.github.comewhy.ding.test/io.github.comewhy.ding.DingInstrumentation`，仅在独立缓存数据库内验证真实 SQLite 与签名权限控制，不操作真实聊天记录。
+
+源码编译和检查可在无签名材料环境进行；APK／App Bundle 打包仍必须通过固定密钥及产物签名校验。
+
 ## 联系作者
 
 - 酷安：[闪退哥](https://www.coolapk.com/u/5628726)
 - Telegram：[联系作者](https://t.me/comewhyBot)
-- Telegram 频道：[点击加入](https://t.me/come_why)
+- Telegram 群组：[点击加入](https://t.me/GText_Ding)
