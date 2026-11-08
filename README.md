@@ -2,10 +2,6 @@
 <p align="center"><strong>钉住消息和隐私</strong></p>
 <p align="center">面向钉钉的第三方 Xposed 模块 · libxposed API 102 · Material Design 3</p>
 
-Ding 提供消息防撤回、禁止已读上报和隐藏输入状态等功能。
-
-应用包名：`io.github.comewhy.ding`。
-
 [反馈问题](https://github.com/comewhy/io.github.comewhy.ding/issues) · [Telegram 群组](https://t.me/GText_Ding)
 
 ## 功能
@@ -136,20 +132,6 @@ Ding 提供消息防撤回、禁止已读上报和隐藏输入状态等功能。
 
 数据升级至 v3 时保留历史记录及旧字段。回滚构建应保留 v3 兼容的存储层，避免旧存储实现拒绝读取升级后的数据库。
 
-## 开发检查
-
-推荐入口：`tools/run_project_checks.ps1 -JavaHome <JDK19目录>`；完整检查后用 `tools/build_release.ps1 -JavaHome <JDK19目录> -SkipChecks` 构建并独立验签，不传 `-SkipChecks` 则先检查再打包。也可在本机忽略文件 `local.properties` 配置 `ding.javaHome`，或设置 `DING_JAVA_HOME`。检查脚本入口校验 JDK 19，并仅在当前进程设置 Java 环境；默认 JDK 27 无法完成当前 Android JDK image 转换。绕过检查脚本直接运行 Gradle 构建时，请使用 Android Studio 自带的 JBR（JDK 21）作为 `JAVA_HOME`。
-
-- `tools/run_behavior_tests.ps1 -AndroidJar <android.jar>` 编译当前生产源码后运行 Hook、安装和配置仓库检查，并生成源码校验清单。
-- 默认行为检查同时运行原图偏好测试；也可单独执行 `tools/run_original_photo_tests.ps1 -AndroidJar <android.jar>`，覆盖新旧入口、手动反选、取消与异常结果、按账号记忆和存储失败。
-- 默认行为检查也包含安全正则、规则迁移、配置传输和独立自动回复回归；RE2/J 测试依赖由 `tools/resolve_re2j.ps1` 下载并校验固定 SHA-256。
-- `python tools/run_store_tests.py` 用测试专用 JDBC 适配器验证生产存储与媒体判断；依赖只放本机测试缓存，不进入 APK。
-- `tests/android/run_control_client_tests.ps1 -AndroidJar <android.jar>` 验证固定 SDK102 权威读写桥和控制响应。
-- `python -m unittest discover -s tests/python` 验证 APK 工具；`tools/verify_target_apk.py` 从当前版本 profile 编译符号清单，检查真实目标 APK。
-- `tests/signing-restore-guard-tests.ps1` 和 `tests/signing-script-tests.ps1 -SkipKeytool` 验证签名恢复守卫，不创建正式密钥。
-- 隔离 Instrumentation 使用 `io.github.comewhy.ding.test/io.github.comewhy.ding.DingInstrumentation`，仅在独立缓存数据库内验证真实 SQLite 与签名权限控制，不操作真实聊天记录。
-
-源码编译和检查可在无签名材料环境进行；APK／App Bundle 打包仍必须通过固定密钥及产物签名校验。
 
 ## 联系作者
 
