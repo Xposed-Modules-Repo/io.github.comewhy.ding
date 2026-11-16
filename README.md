@@ -1,5 +1,5 @@
 <h1 align="center">Ding</h1>
-<p align="center"><strong>钉住消息和隐私</strong></p>
+<p align="center"><strong>钉住所有美好</strong></p>
 <p align="center">面向钉钉的第三方 Xposed 模块 · libxposed API 102 · Material Design 3</p>
 
 
